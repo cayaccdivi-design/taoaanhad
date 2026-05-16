@@ -154,18 +154,15 @@ async function drawTextLayer(ctx, L, ovr, opts) {
     } catch { /* fall through to redraw */ }
   }
 
-  // Re-typeset from scratch.
+  // Re-typeset from scratch, applying any sampled Photoshop effects
+  // so the result still feels like the original PSD even though
+  // the words changed.
   const family = ovr.fontFamily || opts.defaultFontFamily || 'Inter, Arial, sans-serif'
   const color = L.textColor || '#111111'
   const align = L.textAlign || 'center'
   const baseSize = L.textFontSize || estimateFontSize(L.height, finalText)
   const fontSize = fitFontSize(ctx, finalText, family, baseSize, L.width, L.height)
-
-  ctx.save()
-  ctx.fillStyle = color
-  ctx.textBaseline = 'middle'
-  ctx.font = `${fontSize}px ${family}`
-  ctx.textAlign = align
+  const fx = ovr.effects || L.effects || {}
 
   // X anchor depends on alignment so left/center/right look right
   // *inside the layer's bounds*.
@@ -174,16 +171,117 @@ async function drawTextLayer(ctx, L, ovr, opts) {
                                 : L.left + L.width / 2
   const cy = L.top + L.height / 2
 
-  // Multi-line wrap on \n if the customer typed any.
   const lines = wrapLines(ctx, finalText, L.width, fontSize)
   const lineHeight = fontSize * 1.2
   const totalHeight = lineHeight * lines.length
-  let y = cy - totalHeight / 2 + lineHeight / 2
-  for (const line of lines) {
-    ctx.fillText(line, cx, y)
-    y += lineHeight
+  const startY = cy - totalHeight / 2 + lineHeight / 2
+
+  // Helper: run a draw callback (fill or stroke) for every wrapped
+  // line. Centralising this avoids duplicating the alignment math
+  // when we draw shadow → glow → stroke → fill in 4 passes.
+  const forEachLine = (fn) => {
+    let y = startY
+    for (const line of lines) {
+      fn(line, cx, y)
+      y += lineHeight
+    }
   }
+
+  ctx.save()
+  ctx.textBaseline = 'middle'
+  ctx.textAlign = align
+  ctx.font = `${fontSize}px ${family}`
+
+  // ── Pass 1: drop-shadow ──────────────────────────────────────
+  // Canvas's built-in shadow blur on fillText handles this in a
+  // single pass. We must reset shadow state before subsequent
+  // passes so the stroke and the fill don't also get shadowed.
+  if (fx.shadow) {
+    const s = fx.shadow
+    ctx.save()
+    ctx.shadowColor = withOpacity(s.color, s.opacity ?? 0.6)
+    ctx.shadowBlur = s.blur || 4
+    ctx.shadowOffsetX = s.offsetX || 0
+    ctx.shadowOffsetY = s.offsetY || 0
+    ctx.fillStyle = color
+    forEachLine((line, x, y) => ctx.fillText(line, x, y))
+    ctx.restore()
+  }
+
+  // ── Pass 2: outer glow ──────────────────────────────────────
+  // Implemented as a zero-offset shadow with the glow's colour. We
+  // optionally double-stroke at half radius for thicker glows so
+  // the falloff doesn't look blotchy.
+  if (fx.glow) {
+    const g = fx.glow
+    ctx.save()
+    ctx.shadowColor = withOpacity(g.color, g.opacity ?? 0.7)
+    ctx.shadowBlur = g.blur || 6
+    ctx.shadowOffsetX = 0
+    ctx.shadowOffsetY = 0
+    ctx.fillStyle = color
+    forEachLine((line, x, y) => ctx.fillText(line, x, y))
+    if ((g.blur || 0) > 8) {
+      // Second pass with a tighter blur to firm up the inner glow.
+      ctx.shadowBlur = g.blur / 2
+      forEachLine((line, x, y) => ctx.fillText(line, x, y))
+    }
+    ctx.restore()
+  }
+
+  // ── Pass 3: stroke ──────────────────────────────────────────
+  // Drawn after shadow/glow so the stroke colour isn't tinted by
+  // halo passes. Uses miter joins for crisp corners on display
+  // typefaces.
+  if (fx.stroke) {
+    ctx.save()
+    ctx.strokeStyle = fx.stroke.color
+    ctx.lineWidth = fx.stroke.width * 2 // canvas strokes outside-in; doubling preserves apparent width
+    ctx.lineJoin = 'round'
+    ctx.miterLimit = 2
+    forEachLine((line, x, y) => ctx.strokeText(line, x, y))
+    ctx.restore()
+  }
+
+  // ── Pass 4: fill ────────────────────────────────────────────
+  // Gradient fill (if detected) or flat colour. Gradient runs
+  // top→bottom inside the layer bounds; we honour fx.gradient.angle
+  // by rotating the stop endpoints around the layer centre.
+  if (fx.gradient) {
+    const grad = makeLinearGradient(ctx, fx.gradient, L)
+    ctx.fillStyle = grad
+  } else {
+    ctx.fillStyle = color
+  }
+  forEachLine((line, x, y) => ctx.fillText(line, x, y))
+
   ctx.restore()
+}
+
+// Turn an `{ from, to, angle }` gradient spec into a CanvasGradient
+// laid out across the layer's bounding box. angle is in degrees,
+// 0 = →, 90 = ↓ (matches CSS conventions).
+function makeLinearGradient(ctx, g, L) {
+  const angle = ((g.angle ?? 90) * Math.PI) / 180
+  const cx = L.left + L.width / 2
+  const cy = L.top + L.height / 2
+  const len = Math.max(L.width, L.height) / 2
+  const dx = Math.cos(angle) * len
+  const dy = Math.sin(angle) * len
+  const grad = ctx.createLinearGradient(cx - dx, cy - dy, cx + dx, cy + dy)
+  grad.addColorStop(0, g.from)
+  grad.addColorStop(1, g.to)
+  return grad
+}
+
+// Tint a hex colour with a 0..1 opacity. Falls back to the input if
+// the hex is malformed (rare — comes from our own extractor).
+function withOpacity(hex, opacity) {
+  if (!hex || hex[0] !== '#' || hex.length !== 7) return hex
+  const r = parseInt(hex.slice(1, 3), 16)
+  const g = parseInt(hex.slice(3, 5), 16)
+  const b = parseInt(hex.slice(5, 7), 16)
+  return `rgba(${r},${g},${b},${Math.max(0, Math.min(1, opacity))})`
 }
 
 // Pick the largest font size <= baseSize that still fits the bounds

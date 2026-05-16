@@ -30,6 +30,7 @@
 // glyphs using their chosen font + the sampled colour/size.
 
 import Psd from '@webtoon/psd'
+import { extractTextEffects } from './effectExtractor'
 
 // ─────────────────────────────────────────────────────────────────
 //  Public entry
@@ -100,6 +101,17 @@ async function layerToEntry(layer, index) {
   // to the form unless kind === 'text'.
   const sample = sampleTextStyle(rgba, w, h)
 
+  // Effect extraction — sample the rasterised bitmap to recover
+  // approximations of stroke / drop-shadow / outer-glow / gradient
+  // fill. Skipped for image layers because halos around photos are
+  // not interpretable as Photoshop layer effects (more often just
+  // background bleed). See effectExtractor.js for the heuristics.
+  let effects = undefined
+  if (isText) {
+    try { effects = extractTextEffects(rgba, w, h) }
+    catch (err) { console.warn('[psdParser] effects extraction failed', err) }
+  }
+
   return {
     id: `L${index}-${(layer.name || 'layer').replace(/\s+/g, '_')}`,
     name: layer.name || `Layer ${index}`,
@@ -115,6 +127,7 @@ async function layerToEntry(layer, index) {
     textColor: isText ? sample.color : undefined,
     textFontSize: isText ? sample.fontSize : undefined,
     textAlign: isText ? sample.align : undefined,
+    effects,            // { stroke?, shadow?, glow?, gradient?, fill? }
     bitmapDataUrl,
   }
 }

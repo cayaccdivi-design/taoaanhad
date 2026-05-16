@@ -420,6 +420,22 @@ export default function PsdAdminPage() {
               style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
               <span className="text-xs text-white/55 truncate max-w-[260px]" title={psdName}>{psdName}</span>
               <span className="text-[10px] text-white/30">{parsed.width}×{parsed.height} · {parsed.layers.length} layer</span>
+              {(() => {
+                // Quick badge so admins can see at a glance how many
+                // text layers carry sampled Photoshop effects (stroke,
+                // shadow, glow, gradient). Helps them spot when the
+                // PSD's effects didn't extract cleanly.
+                const fxCount = parsed.layers.filter(
+                  (L) => L.effects && (L.effects.stroke || L.effects.shadow || L.effects.glow || L.effects.gradient),
+                ).length
+                if (fxCount === 0) return null
+                return (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold"
+                    style={{ background: 'rgba(110,75,255,0.18)', color: '#c4b5fd', border: '1px solid rgba(110,75,255,0.3)' }}>
+                    ✨ {fxCount} effect
+                  </span>
+                )
+              })()}
               <div className="flex-1" />
               <button
                 onClick={() => psdInputRef.current?.click()}
@@ -693,6 +709,22 @@ function LayerRow({ layer, locked, onToggleLock }) {
           </p>
         )}
       </div>
+      {/* Effects sparkle: only shown when at least one Photoshop
+          effect was successfully sampled. The tooltip lists which
+          ones so admins can verify before publishing. */}
+      {layer.effects && (layer.effects.stroke || layer.effects.shadow || layer.effects.glow || layer.effects.gradient) && (
+        <span
+          title={[
+            layer.effects.stroke   && `Stroke ${layer.effects.stroke.width}px ${layer.effects.stroke.color}`,
+            layer.effects.shadow   && `Shadow ${layer.effects.shadow.blur}px ${layer.effects.shadow.color}`,
+            layer.effects.glow     && `Glow ${layer.effects.glow.blur}px ${layer.effects.glow.color}`,
+            layer.effects.gradient && `Gradient ${layer.effects.gradient.from}→${layer.effects.gradient.to}`,
+          ].filter(Boolean).join(' · ')}
+          className="text-[10px] flex-shrink-0"
+          style={{ color: '#c4b5fd' }}>
+          ✨
+        </span>
+      )}
       <button
         onClick={onToggleLock}
         title={lockedByName ? 'Layer này được khoá theo tên (lock_*) — admin vẫn có thể mở thủ công' : 'Bấm để khoá / mở khoá'}
