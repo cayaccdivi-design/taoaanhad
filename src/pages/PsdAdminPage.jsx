@@ -21,7 +21,7 @@ import { motion } from 'framer-motion'
 import {
   Shield, Upload, FileType, Layers, Type, Lock, Unlock,
   Eye, EyeOff, Loader, AlertCircle, Save, Image as ImageIcon,
-  Sparkles, Store,
+  Sparkles, Store, Wand2,
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -36,6 +36,7 @@ import { useAuthStore } from '../store/useAuthStore'
 import { useAppStore } from '../store/useAppStore'
 import { usePsdStore } from '../store/usePsdStore'
 import { useShopStore } from '../store/useShopStore'
+import PsdBuilder from '../components/admin/PsdBuilder'
 
 const CARD = {
   background: 'rgba(255,255,255,0.04)',
@@ -95,10 +96,37 @@ export default function PsdAdminPage() {
   const [busy, setBusy] = useState(false)
   const [busyMsg, setBusyMsg] = useState('')
 
+  // 'idle' = empty state with two paths (upload | builder)
+  // 'builder' = the in-app PSD builder is open
+  // Once `parsed` is set we switch to the editor regardless of source.
+  const [mode, setMode] = useState('idle')
+
   // Guard: admins only.
   useEffect(() => {
     if (!isAdmin) navigate('/')
   }, [isAdmin, navigate])
+
+  // ── Builder mode → "fake parse" ───────────────────────────────────
+  // The builder hands us an object with the same shape as the parser's
+  // output. We feed it through the same setState path so the rest of
+  // the component (preview, locks, publish) doesn't know — or care —
+  // whether the layers came from a real .psd or an in-app build.
+  const handleBuilderCreate = useCallback((template, meta) => {
+    if (!template) return
+    setPsdName(`Tự tạo · ${template.width}×${template.height}`)
+    setPsdBuffer(null) // no source bytes for tool-built templates
+    setParsed(template)
+    setTemplateName((prev) => prev || `Template ${new Date().toLocaleDateString('vi-VN')}`)
+    // Pre-lock by name convention (lock_background from the builder).
+    const initialLocks = {}
+    for (const L of template.layers) {
+      if (isLockLayerName(L.name)) initialLocks[L.name] = true
+    }
+    setLocks(initialLocks)
+    setCustomLabels({})
+    setMode('idle')
+    toast(`Đã tạo template với ${template.layers.length} layer`, 'success')
+  }, [toast])
 
   // ── PSD upload ─────────────────────────────────────────────────────
   const handlePsdUpload = useCallback(async (file) => {
@@ -311,37 +339,76 @@ export default function PsdAdminPage() {
         </div>
       </motion.div>
 
-      {/* Upload zone — visible until a PSD is loaded */}
-      {!parsed && (
-        <div className="rounded-2xl p-8 text-center" style={CARD}>
-          <FileType size={36} className="mx-auto text-white/30 mb-3" />
-          <p className="text-white/70 mb-4">Bắt đầu bằng cách tải lên một file PSD</p>
-          <input
-            ref={psdInputRef} type="file" accept=".psd" className="hidden"
-            onChange={(e) => handlePsdUpload(e.target.files?.[0])}
-          />
-          <button
-            onClick={() => psdInputRef.current?.click()}
-            disabled={busy}
-            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-50"
-            style={{ background: 'linear-gradient(135deg,#6e4bff,#4dd0ff)' }}>
-            <Upload size={14} /> Chọn file .psd
-          </button>
-          <div className="text-[11px] text-white/35 mt-4 max-w-2xl mx-auto leading-relaxed">
-            <p>
-              <span className="text-white/50">Tên layer text khách sửa được:</span>{' '}
-              <code className="text-cyan-300">{editableTextHint()}</code>
+      {/* Empty state — show two paths: upload existing PSD, or build from scratch with the in-app tool */}
+      {!parsed && mode !== 'builder' && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="rounded-2xl p-8 text-center" style={CARD}>
+            <FileType size={36} className="mx-auto text-white/30 mb-3" />
+            <h3 className="text-base font-semibold text-white mb-1">Tải file .psd có sẵn</h3>
+            <p className="text-white/55 text-xs mb-4">Phù hợp khi bạn đã thiết kế trên Photoshop</p>
+            <input
+              ref={psdInputRef} type="file" accept=".psd" className="hidden"
+              onChange={(e) => handlePsdUpload(e.target.files?.[0])}
+            />
+            <button
+              onClick={() => psdInputRef.current?.click()}
+              disabled={busy}
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-50"
+              style={{ background: 'linear-gradient(135deg,#6e4bff,#4dd0ff)' }}>
+              <Upload size={14} /> Chọn file .psd
+            </button>
+            <div className="text-[11px] text-white/35 mt-4 leading-relaxed text-left">
+              <p>
+                <span className="text-white/50">Tên layer text khách sửa được:</span>{' '}
+                <code className="text-cyan-300">{editableTextHint()}</code>
+              </p>
+              <p className="mt-1">
+                <span className="text-white/50">Tên layer ảnh khách thay được:</span>{' '}
+                <code className="text-cyan-300">{editableImageHint()}</code>
+              </p>
+              <p className="mt-1">
+                <span className="text-white/50">Layer khoá vĩnh viễn:</span>{' '}
+                <code className="text-amber-300">lock_background, lock_avt, lock_character, lock_logo, lock_title…</code>
+              </p>
+            </div>
+          </div>
+
+          <div className="rounded-2xl p-8 text-center relative overflow-hidden" style={{
+            ...CARD,
+            background: 'linear-gradient(135deg, rgba(110,75,255,0.12) 0%, rgba(77,208,255,0.06) 100%)',
+            border: '1px solid rgba(110,75,255,0.3)',
+          }}>
+            <div className="absolute -right-10 -top-10 w-40 h-40 rounded-full pointer-events-none"
+              style={{ background: 'radial-gradient(circle, rgba(110,75,255,0.25) 0%, transparent 70%)' }} />
+            <Wand2 size={36} className="mx-auto text-violet-300 mb-3 relative z-10" />
+            <h3 className="text-base font-semibold text-white mb-1 relative z-10">Tạo PSD bằng tool</h3>
+            <p className="text-white/55 text-xs mb-4 relative z-10">
+              Không cần Photoshop · build trực tiếp trên web
             </p>
-            <p className="mt-1">
-              <span className="text-white/50">Tên layer ảnh khách thay được:</span>{' '}
-              <code className="text-cyan-300">{editableImageHint()}</code>
-            </p>
-            <p className="mt-1">
-              <span className="text-white/50">Layer khoá vĩnh viễn:</span>{' '}
-              <code className="text-amber-300">lock_background, lock_avt, lock_character, lock_logo, lock_title…</code>
-            </p>
+            <button
+              onClick={() => setMode('builder')}
+              disabled={busy}
+              className="relative z-10 inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-50"
+              style={{ background: 'linear-gradient(135deg,#6e4bff,#4dd0ff)' }}>
+              <Wand2 size={14} /> Mở builder
+            </button>
+            <div className="text-[11px] text-white/45 mt-4 leading-relaxed text-left relative z-10">
+              <p>· Chọn kích thước & nền (gradient / màu / ảnh)</p>
+              <p>· Bật/tắt từng slot: tiêu đề, nhân vật, avatar tròn, logo…</p>
+              <p>· Tự sinh layer đúng tên chuẩn để khách chỉnh được</p>
+              <p>· Tiếp tục đặt khoá, font, phí và đăng cửa hàng như bình thường</p>
+            </div>
           </div>
         </div>
+      )}
+
+      {/* Builder mode */}
+      {!parsed && mode === 'builder' && (
+        <PsdBuilder
+          toast={toast}
+          onCancel={() => setMode('idle')}
+          onCreate={handleBuilderCreate}
+        />
       )}
 
       {/* Editor */}
@@ -360,6 +427,19 @@ export default function PsdAdminPage() {
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs disabled:opacity-40"
                 style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: 'white' }}>
                 <Upload size={12} /> Đổi PSD
+              </button>
+              <button
+                onClick={() => {
+                  // Reset to empty state then open the builder; the
+                  // existing locks/labels/fonts cleanly go with it.
+                  setParsed(null); setPsdBuffer(null); setPsdName('')
+                  setLocks({}); setCustomLabels({})
+                  setMode('builder')
+                }}
+                disabled={busy}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs disabled:opacity-40"
+                style={{ background: 'rgba(110,75,255,0.15)', border: '1px solid rgba(110,75,255,0.3)', color: '#c4b5fd' }}>
+                <Wand2 size={12} /> Tạo bằng tool
               </button>
               <input
                 ref={psdInputRef} type="file" accept=".psd" className="hidden"
